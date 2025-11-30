@@ -7,6 +7,10 @@ import {
   TechnicalAnswerFeedback
 } from "./types";
 
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL =
+  process.env.GEMINI_MODEL ?? "gemini-1.5-flash";
+
 interface EvaluateBehavioralParams {
   transcript: string;
   question: Question;
@@ -26,16 +30,80 @@ interface EvaluateTechnicalParams {
 export async function evaluateBehavioralAnswer(
   params: EvaluateBehavioralParams
 ): Promise<BehavioralAnswerFeedback> {
-  const { transcript, question, personaType } = params;
+  const heuristic = buildBehavioralHeuristic(params);
 
-  // Simple heuristic fallback if Gemini is not configured.
+  if (!GEMINI_API_KEY) {
+    return heuristic;
+  }
+
+  try {
+    const aiFeedback = await callGeminiBehavioral(params);
+    if (aiFeedback) {
+      return aiFeedback;
+    }
+  } catch {
+    // Swallow and fall back to heuristic.
+  }
+
+  return heuristic;
+}
+
+export async function evaluateTechnicalAnswer(
+  params: EvaluateTechnicalParams
+): Promise<TechnicalAnswerFeedback> {
+  const heuristic = buildTechnicalHeuristic(params);
+
+  if (!GEMINI_API_KEY) {
+    return heuristic;
+  }
+
+  try {
+    const aiFeedback = await callGeminiTechnical(params);
+    if (aiFeedback) {
+      return aiFeedback;
+    }
+  } catch {
+    // Swallow and fall back to heuristic.
+  }
+
+  return heuristic;
+}
+
+export interface GeneratedSessionQuestions {
+  questions: Question[];
+}
+
+export async function generateSessionQuestions(params: {
+  interviewType: InterviewType;
+  difficulty: Difficulty;
+  roleTarget: string;
+  personaType: PersonaType;
+  count: number;
+  seedQuestions: Question[];
+}): Promise<GeneratedSessionQuestions> {
+  // For now, we simply return the provided seed questions (already filtered)
+  // but this is the hook where Gemini + your historical dataset would refine
+  // or rephrase questions.
+  return {
+    questions: params.seedQuestions
+  };
+}
+
+function buildBehavioralHeuristic(
+  params: EvaluateBehavioralParams
+): BehavioralAnswerFeedback {
+  const { transcript, personaType } = params;
+
   const wordCount = transcript.split(/\s+/).filter(Boolean).length;
   const hasExample = /for example|for instance|one time|once/i.test(transcript);
   const mentionsResult = /result|outcome|impact|improved|increased|reduced/i.test(
     transcript
   );
 
-  let baseContent = Math.min(10, Math.floor(wordCount / 20) + (hasExample ? 2 : 0));
+  let baseContent = Math.min(
+    10,
+    Math.floor(wordCount / 20) + (hasExample ? 2 : 0)
+  );
   let structure = hasExample && mentionsResult ? 8 : 5;
   let communication = Math.min(9, Math.floor(wordCount / 25) + 4);
 
@@ -45,7 +113,6 @@ export async function evaluateBehavioralAnswer(
     communication = 1;
   }
 
-  // ESL learners: be extra encouraging on communication.
   if (personaType === "esl") {
     communication = Math.max(communication, 7);
   }
@@ -81,15 +148,13 @@ export async function evaluateBehavioralAnswer(
     };
   }
 
-  // In a real deployment, attempt a Gemini call here and fall back to this heuristic.
-  // For now this is the main implementation to keep the vertical slice working.
   return feedback;
 }
 
-export async function evaluateTechnicalAnswer(
+function buildTechnicalHeuristic(
   params: EvaluateTechnicalParams
-): Promise<TechnicalAnswerFeedback> {
-  const { code, question, difficulty, passedTests, totalTests } = params;
+): TechnicalAnswerFeedback {
+  const { code, difficulty, passedTests, totalTests } = params;
 
   const passRatio = totalTests > 0 ? passedTests / totalTests : 0;
   let correctness = Math.round(passRatio * 10);
@@ -138,24 +203,226 @@ export async function evaluateTechnicalAnswer(
   return feedback;
 }
 
-export interface GeneratedSessionQuestions {
-  questions: Question[];
+async function callGeminiBehavioral(
+  params: EvaluateBehavioralParams
+): Promise<BehavioralAnswerFeedback | null> {
+  if (!GEMINI_API_KEY) return null;
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+
+  const prompt = `
+You are a kind but direct mock interview coach.
+Evaluate the candidate's behavioral answer.
+
+Return ONLY JSON with the following shape:
+
+{
+  "contentScore": number,         // 0-10
+  "structureScore": number,       // 0-10
+  "communicationScore": number,   // 0-10
+  "whatWentWell": string[],       // 1-4 short bullets
+  "improveNextTime": string[],    // 1-4 short bullets
+  "languageFeedback": {
+    "pronunciationTips": string[],
+    "grammarTips": string[]
+  } | null
 }
 
-export async function generateSessionQuestions(params: {
-  interviewType: InterviewType;
-  difficulty: Difficulty;
-  roleTarget: string;
-  personaType: PersonaType;
-  count: number;
-  seedQuestions: Question[];
-}): Promise<GeneratedSessionQuestions> {
-  // For now, we simply return the provided seed questions (already filtered)
-  // but this is the hook where Gemini + your historical dataset would refine
-  // or rephrase questions.
-  return {
-    questions: params.seedQuestions
+Scores:
+- 0-3: weak
+- 4-6: needs work
+- 7-8: decent
+- 9-10: strong.
+
+Persona type:
+- "student": college CS student.
+- "bootcamp": bootcamp/self-taught dev.
+- "esl": English is not their first language, be extra gentle and encouraging.
+
+If personaType is not "esl", set languageFeedback to null.
+
+Question:
+${params.question.title}
+${params.question.body}
+
+PersonaType: ${params.personaType}
+Difficulty: ${params.difficulty}
+
+Transcript:
+${params.transcript}
+`.trim();
+
+  const payload = {
+    contents: [
+      {
+        parts: [
+          {
+            text: prompt
+          }
+        ]
+      }
+    ],
+    responseMimeType: "application/json"
   };
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!res.ok) {
+    return null;
+  }
+
+  const data = (await res.json()) as any;
+  const text =
+    data.candidates?.[0]?.content?.parts?.[0]?.text ??
+    data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+
+  if (!text || typeof text !== "string") {
+    return null;
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+
+  if (
+    typeof parsed.contentScore !== "number" ||
+    typeof parsed.structureScore !== "number" ||
+    typeof parsed.communicationScore !== "number" ||
+    !Array.isArray(parsed.whatWentWell) ||
+    !Array.isArray(parsed.improveNextTime)
+  ) {
+    return null;
+  }
+
+  const feedback: BehavioralAnswerFeedback = {
+    contentScore: clampScore(parsed.contentScore),
+    structureScore: clampScore(parsed.structureScore),
+    communicationScore: clampScore(parsed.communicationScore),
+    whatWentWell: parsed.whatWentWell,
+    improveNextTime: parsed.improveNextTime
+  };
+
+  if (parsed.languageFeedback && params.personaType === "esl") {
+    feedback.languageFeedback = {
+      pronunciationTips:
+        parsed.languageFeedback.pronunciationTips ?? [],
+      grammarTips: parsed.languageFeedback.grammarTips ?? []
+    };
+  }
+
+  return feedback;
+}
+
+async function callGeminiTechnical(
+  params: EvaluateTechnicalParams
+): Promise<TechnicalAnswerFeedback | null> {
+  if (!GEMINI_API_KEY) return null;
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+
+  const passRatio =
+    params.totalTests > 0
+      ? params.passedTests / params.totalTests
+      : 0;
+
+  const prompt = `
+You are a senior engineer reviewing a candidate's solution to an interview problem.
+
+Return ONLY JSON with the following shape:
+
+{
+  "correctnessScore": number,   // 0-10, based on described test pass ratio
+  "efficiencyScore": number,    // 0-10, rough time/space complexity and approach
+  "qualityScore": number,       // 0-10, readability, structure, naming
+  "whatWentWell": string[],     // 1-4 short bullets
+  "improveNextTime": string[]   // 1-4 short bullets
+}
+
+Be concise and constructive.
+
+Question:
+${params.question.title}
+${params.question.body}
+
+Difficulty: ${params.difficulty}
+Language: ${params.language}
+Test summary: ${params.passedTests}/${params.totalTests} tests passed (pass ratio ${passRatio.toFixed(
+    2
+  )}).
+
+User code:
+${params.code}
+`.trim();
+
+  const payload = {
+    contents: [
+      {
+        parts: [
+          {
+            text: prompt
+          }
+        ]
+      }
+    ],
+    responseMimeType: "application/json"
+  };
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!res.ok) {
+    return null;
+  }
+
+  const data = (await res.json()) as any;
+  const text =
+    data.candidates?.[0]?.content?.parts?.[0]?.text ??
+    data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+
+  if (!text || typeof text !== "string") {
+    return null;
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+
+  if (
+    typeof parsed.correctnessScore !== "number" ||
+    typeof parsed.efficiencyScore !== "number" ||
+    typeof parsed.qualityScore !== "number" ||
+    !Array.isArray(parsed.whatWentWell) ||
+    !Array.isArray(parsed.improveNextTime)
+  ) {
+    return null;
+  }
+
+  const feedback: TechnicalAnswerFeedback = {
+    correctnessScore: clampScore(parsed.correctnessScore),
+    efficiencyScore: clampScore(parsed.efficiencyScore),
+    qualityScore: clampScore(parsed.qualityScore),
+    whatWentWell: parsed.whatWentWell,
+    improveNextTime: parsed.improveNextTime
+  };
+
+  return feedback;
 }
 
 function clampScore(score: number): number {
