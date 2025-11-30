@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -55,6 +56,7 @@ const PERSONA_GOALS: { id: PersonaType; label: string; helper: string }[] = [
 
 export default function InterviewSetupPage() {
   const router = useRouter();
+  const { data: session } = useSession();
   const [interviewType, setInterviewType] = useState<InterviewType>("mixed");
   const [difficulty, setDifficulty] = useState<Difficulty>("medium");
   const [duration, setDuration] = useState<number>(30);
@@ -62,6 +64,20 @@ export default function InterviewSetupPage() {
   const [personaType, setPersonaType] = useState<PersonaType>("student");
   const [isStarting, setIsStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!session?.user) return;
+
+    if (session.user.preferredInterviewType) {
+      setInterviewType(session.user.preferredInterviewType as InterviewType);
+    }
+    if (session.user.personaType) {
+      setPersonaType(session.user.personaType as PersonaType);
+    }
+    if (session.user.roleTarget) {
+      setRoleTarget(session.user.roleTarget);
+    }
+  }, [session?.user]);
 
   const handleStart = async () => {
     setIsStarting(true);

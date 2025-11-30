@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
 import { pickQuestions } from "@/lib/questions";
-import {
-  createSession
-} from "@/lib/store";
+import { createSession } from "@/lib/store";
 import type {
   Difficulty,
   InterviewSession,
@@ -10,6 +9,7 @@ import type {
   PersonaType
 } from "@/lib/types";
 import { generateSessionQuestions } from "@/lib/ai";
+import { authOptions } from "@/lib/auth";
 
 export async function POST(req: Request) {
   const body = (await req.json()) as {
@@ -28,7 +28,8 @@ export async function POST(req: Request) {
     personaType
   } = body;
 
-  const baseUserId = "demo-user"; // placeholder until auth is wired
+  const sessionAuth = await getServerSession(authOptions);
+  const userId = sessionAuth?.user?.id ?? "demo-user";
 
   const seed = pickQuestions({
     interviewType: type,
@@ -54,7 +55,7 @@ export async function POST(req: Request) {
 
   const session: InterviewSession = {
     id: sessionId,
-    userId: baseUserId,
+    userId,
     type,
     difficulty,
     durationMin,
