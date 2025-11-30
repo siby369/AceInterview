@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import {
   getAllSessionsForUser,
   getBehavioralAnswersForSession,
   getCodeSubmissionsForSession
 } from "@/lib/store";
-import type { InterviewSession } from "@/lib/types";
+import {
+  computeBehavioralAverageScore,
+  computeSessionOverallScore,
+  computeTechnicalAverageScore
+} from "@/lib/scoring";
 
 export async function GET() {
   const userId = "demo-user"; // placeholder until auth is wired
@@ -15,39 +20,9 @@ export async function GET() {
       const behavioralAnswers = getBehavioralAnswersForSession(session.id);
       const codeSubs = getCodeSubmissionsForSession(session.id);
 
-      let behavioralTotal = 0;
-      let behavioralCount = 0;
-      for (const ans of behavioralAnswers) {
-        if (ans.feedback) {
-          const avg =
-            (ans.feedback.contentScore +
-              ans.feedback.structureScore +
-              ans.feedback.communicationScore) /
-            3;
-          behavioralTotal += avg;
-          behavioralCount += 1;
-        }
-      }
-      const behavioralAverage =
-        behavioralCount > 0 ? (behavioralTotal / behavioralCount) * 10 : null;
-
-      let technicalTotal = 0;
-      let technicalCount = 0;
-      for (const sub of codeSubs) {
-        if (sub.feedback) {
-          const avg =
-            (sub.feedback.correctnessScore +
-              sub.feedback.efficiencyScore +
-              sub.feedback.qualityScore) /
-            3;
-          technicalTotal += avg;
-          technicalCount += 1;
-        }
-      }
-      const technicalAverage =
-        technicalCount > 0 ? (technicalTotal / technicalCount) * 10 : null;
-
-      const overallScore = computeOverallScore(
+      const behavioralAverage = computeBehavioralAverageScore(behavioralAnswers);
+      const technicalAverage = computeTechnicalAverageScore(codeSubs);
+      const overallScore = computeSessionOverallScore(
         session,
         behavioralAverage,
         technicalAverage
@@ -118,31 +93,4 @@ export async function GET() {
     },
     sessions: sessionsPayload
   });
-}
-
-function computeOverallScore(
-  session: InterviewSession,
-  behavioralAverage: number | null,
-  technicalAverage: number | null
-): number | null {
-  if (!behavioralAverage && !technicalAverage) {
-    return null;
-  }
-
-  const type = session.type;
-  if (type === "technical") {
-    const tech = technicalAverage ?? 0;
-    const beh = behavioralAverage ?? tech;
-    return 0.8 * tech + 0.2 * beh;
-  }
-
-  if (type === "behavioral") {
-    const beh = behavioralAverage ?? 0;
-    const tech = technicalAverage ?? beh;
-    return 0.8 * beh + 0.2 * tech;
-  }
-
-  const tech = technicalAverage ?? 0;
-  const beh = behavioralAverage ?? 0;
-  return 0.5 * tech + 0.5 * beh;
 }

@@ -5,7 +5,12 @@ import {
   getQuestionsForSession,
   getSession
 } from "@/lib/store";
-import type { InterviewSession } from "@/lib/types";
+import {
+  computeBehavioralAverageScore,
+  computeSessionOverallScore,
+  computeTechnicalAverageScore,
+  suggestNextPracticeType
+} from "@/lib/scoring";
 import {
   Card,
   CardContent,
@@ -29,18 +34,18 @@ export default function ReportPage({ params }: PageProps) {
   const behavioralAnswers = getBehavioralAnswersForSession(session.id);
   const codeSubs = getCodeSubmissionsForSession(session.id);
 
-  const behavioralStats = computeBehavioralStats(session, behavioralAnswers);
-  const technicalStats = computeTechnicalStats(session, codeSubs);
-  const overallScore = computeOverallScore(
+  const behavioralAverage = computeBehavioralAverageScore(behavioralAnswers);
+  const technicalAverage = computeTechnicalAverageScore(codeSubs);
+  const overallScore = computeSessionOverallScore(
     session,
-    behavioralStats.averageScore,
-    technicalStats.averageScore
+    behavioralAverage,
+    technicalAverage
   );
 
   const strengths: string[] = [];
   const focusAreas: string[] = [];
 
-  if (behavioralStats.averageScore != null && behavioralStats.averageScore >= 65) {
+  if (behavioralAverage != null && behavioralAverage >= 65) {
     strengths.push("Behavioral answers show good clarity and content.");
   } else {
     focusAreas.push(
@@ -48,11 +53,13 @@ export default function ReportPage({ params }: PageProps) {
     );
   }
 
-  if (technicalStats.averageScore != null && technicalStats.averageScore >= 65) {
+  if (technicalAverage != null && technicalAverage >= 65) {
     strengths.push("Technical problem solving is heading in a solid direction.");
   } else {
     focusAreas.push(
       "Spend more time on practicing DS/Algo or implementation exercises at the chosen difficulty."
+    );
+  </cises at the chosen difficulty."
     );
   }
 
@@ -62,6 +69,12 @@ export default function ReportPage({ params }: PageProps) {
       "Keep answers short and clear. Focus on simple sentences and key points."
     );
   }
+
+  const recommendedNext = suggestNextPracticeType({
+    session,
+    behavioralAverage,
+    technicalAverage
+  });
 
   return (
     <div className="flex flex-col gap-4">
@@ -128,7 +141,7 @@ export default function ReportPage({ params }: PageProps) {
         </Card>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader>
             <CardTitle>Key strengths</CardTitle>
@@ -171,6 +184,17 @@ export default function ReportPage({ params }: PageProps) {
             )}
           </CardContent>
         </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Suggested next practice</CardTitle>
+            <CardDescription>
+              A simple recommendation for your very next session.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-slate-200">{recommendedNext}</p>
+          </CardContent>
+        </Card>
       </div>
 
       <Card>
@@ -202,83 +226,4 @@ export default function ReportPage({ params }: PageProps) {
       </Card>
     </div>
   );
-}
-
-function computeBehavioralStats(
-  _session: InterviewSession,
-  answers: ReturnType<typeof getBehavioralAnswersForSession>
-) {
-  let total = 0;
-  let count = 0;
-
-  for (const ans of answers) {
-    if (ans.feedback) {
-      const avg =
-        (ans.feedback.contentScore +
-          ans.feedback.structureScore +
-          ans.feedback.communicationScore) /
-        3;
-      total += avg;
-      count += 1;
-    }
-  }
-
-  const averageScore = count > 0 ? (total / count) * 10 : null;
-
-  return {
-    averageScore
-  };
-}
-
-function computeTechnicalStats(
-  _session: InterviewSession,
-  submissions: ReturnType<typeof getCodeSubmissionsForSession>
-) {
-  let total = 0;
-  let count = 0;
-
-  for (const sub of submissions) {
-    if (sub.feedback) {
-      const avg =
-        (sub.feedback.correctnessScore +
-          sub.feedback.efficiencyScore +
-          sub.feedback.qualityScore) /
-        3;
-      total += avg;
-      count += 1;
-    }
-  }
-
-  const averageScore = count > 0 ? (total / count) * 10 : null;
-
-  return {
-    averageScore
-  };
-}
-
-function computeOverallScore(
-  session: InterviewSession,
-  behavioralAverage: number | null,
-  technicalAverage: number | null
-): number | null {
-  if (!behavioralAverage && !technicalAverage) {
-    return null;
-  }
-
-  const type = session.type;
-  if (type === "technical") {
-    const tech = technicalAverage ?? 0;
-    const beh = behavioralAverage ?? tech;
-    return 0.8 * tech + 0.2 * beh;
-  }
-
-  if (type === "behavioral") {
-    const beh = behavioralAverage ?? 0;
-    const tech = technicalAverage ?? beh;
-    return 0.8 * beh + 0.2 * tech;
-  }
-
-  const tech = technicalAverage ?? 0;
-  const beh = behavioralAverage ?? 0;
-  return 0.5 * tech + 0.5 * beh;
 }
